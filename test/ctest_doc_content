@@ -1,3 +1,9 @@
+#!/bin/bash
+
+# shellcheck source=/dev/null
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"/test-lib.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"/test-lib-mongodb.sh
+
 #
 # Documentation content test for MongoDB image.
 #
@@ -5,7 +11,14 @@
 
 function ctest_doc_content() {
   : "  Testing documentation content"
-  ct_doc_content_old MONGODB\\_ADMIN\\_PASSWORD volume
+  ct_doc_content_old 'MONGODB\\_ADMIN\\_PASSWORD' volume
   : "  Success!"
 }
 
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  ct_init
+  ctest_doc_content "$@"
+  ct_finish
+fi
+
+# vim: set tabstop=2:shiftwidth=2:expandtab:

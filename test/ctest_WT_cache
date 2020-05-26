@@ -1,3 +1,9 @@
+#!/bin/bash
+
+# shellcheck source=/dev/null
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"/test-lib.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"/test-lib-mongodb.sh
+
 #
 # WT cache size test for MongoDB image.
 #
@@ -44,3 +50,10 @@ ctest_WT_cache() {
     echo
 }
 
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  ct_init
+  ctest_WT_cache "$@"
+  ct_finish
+fi
+
+# vim: set tabstop=2:shiftwidth=2:expandtab:

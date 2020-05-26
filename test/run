@@ -6,11 +6,9 @@
 # The image has to be available before this script is executed.
 #
 
-set -exo nounset
-shopt -s nullglob
-
-. test/common-lib
-. test/lib
+# shellcheck source=/dev/null
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"/test-lib.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"/test-lib-mongodb.sh
 
 TEST_LIST="\
 ctest_container_creation
@@ -23,29 +21,19 @@ ctest_local_replication
 ctest_s2i
 ctest_ssl"
 
-VERSION_NUM=$(get_version_number $VERSION | sed  -e 's/\.//g')
 if test $VERSION_NUM -ge 32; then
     TEST_LIST="${TEST_LIST}
 ctest_WT_cache"
 fi
 
-test $# -eq 1 -a "${1-}" == --list && exit 0
-
-CID_FILE_DIR=$(mktemp --suffix=mongodb_test_cidfiles -d)
-
-TEST_DIR="$(readlink -zf $(dirname "${BASH_SOURCE[0]}"))"
-S2I_ARGS="--pull-policy=never "
-
 volumes_to_clean=
 
-function cleanup() {
+function ct_cleanup_extra() {
   local network_name="mongodb-replset-$$"
-  ct_cleanup
   ! docker network ls | grep -q ${network_name} || docker network rm ${network_name}
 
   ct_path_foreach "$volumes_to_clean" cleanup_volume_dir
 }
-trap cleanup EXIT SIGINT
 
 cleanup_volume_dir ()
 {
@@ -59,114 +47,8 @@ cleanup_volume_dir ()
   rmdir "$1"
 }
 
-function test_mongo() {
-    echo "  Testing MongoDB"
-    if [ -v ADMIN_PASS ]; then
-        echo "  Testing Admin user privileges"
-        mongo_admin_cmd "db=db.getSiblingDB('${DB}');db.dropUser('${USER}');"
-        mongo_admin_cmd "db=db.getSiblingDB('${DB}');db.createUser({user:'${USER}',pwd:'${PASS}',roles:['readWrite','userAdmin','dbAdmin']});"
-        mongo_admin_cmd "db=db.getSiblingDB('${DB}');db.testData.insert({x:0});"
-        mongo_cmd "db.createUser({user:'test_user2',pwd:'test_password2',roles:['readWrite']});"
-    fi
-    echo "  Testing user privileges"
-    mongo_cmd "db.testData.insert({ y : 1 });"
-    mongo_cmd "db.testData.insert({ z : 2 });"
-    mongo_cmd "db.testData.find().forEach(printjson);"
-    mongo_cmd "db.testData.count();"
-    mongo_cmd "db.testData.drop();"
-    mongo_cmd "db.dropDatabase();"
-    echo "  Success!"
-}
+ct_init
+# shellcheck disable=SC2086
+ct_run_all_tests $@
+ct_finish
 
-function ctest_configuration() {
-    echo "  Testing image configuration settings"
-    test_config_option MONGODB_QUIET true "quiet: true"
-    if test $VERSION_NUM -le 30; then
-        test_config_option MONGODB_PREALLOC false "preallocDataFiles: false"
-        test_config_option MONGODB_NOPREALLOC true "preallocDataFiles: false"
-        test_config_option MONGODB_SMALLFILES true "smallFiles: true"
-    fi
-    echo "  Success!"
-}
-
-function ctest_mount_config() {
-    local name="mount_config"
-    echo "  Testing config file mount"
-    local database='db'
-    local user='user'
-    local password='password'
-    local admin_password='adminPassword'
-
-    local volume_dir
-    local config_content
-    volume_dir=`mktemp -d --tmpdir mongodb-testdata.XXXXX`
-    chmod a+rwx ${volume_dir}
-    ct_path_append volumes_to_clean "$volume_dir"
-    config_file=$volume_dir/mongod.conf
-    config_content="dbpath=/var/lib/mongodb/dbpath
-unixSocketPrefix = /var/lib/mongodb
-bind_ip = 0.0.0.0"
-    if test $VERSION_NUM -le 30; then
-    config_content="$config_content
-smallfiles = true
-noprealloc = true"
-    fi
-    echo "$config_content" > $config_file
-    chmod a+wr ${config_file}
-
-    CONTAINER_ARGS="
--e MONGODB_DATABASE=${database}
--e MONGODB_USER=${user}
--e MONGODB_PASSWORD=${password}
--e MONGODB_ADMIN_PASSWORD=${admin_password}
--v ${config_file}:/etc/mongod.conf:z
--v ${volume_dir}:/var/lib/mongodb/dbpath:z
-"
-    ct_create_container $name
-
-    # need to set these because `mongo_cmd` relies on global variables
-    USER=${user}
-    PASS=${password}
-    DB=${database}
-
-    # need this to wait for the container to start up
-    CONTAINER_IP=$(ct_get_cip ${name})
-    echo "  Testing mongod is running"
-    test_connection ${name}
-    echo "  Testing config file works"
-    docker exec $(ct_get_cid ${name}) bash -c "test -S /var/lib/mongodb/mongodb-27017.sock"
-
-    echo "  Success!"
-}
-
-function ctest_s2i() {
-    echo "  Testing s2i usage"
-    ct_s2i_usage ${IMAGE_NAME} ${S2I_ARGS} &>/dev/null
-
-    # Set configuration file (differs for mmapv1 storage engine)
-    mv ${TEST_DIR}/examples/extending-image/mongodb-cfg/mongod.conf ${TEST_DIR}/examples/extending-image/mongodb-cfg/mongod.conf.backup
-
-    if test $VERSION_NUM -ge 32; then
-        ln -s mongod-WT.conf ${TEST_DIR}/examples/extending-image/mongodb-cfg/mongod.conf
-    else
-        ln -s mongod-mmapv1.conf ${TEST_DIR}/examples/extending-image/mongodb-cfg/mongod.conf
-    fi
-
-    echo "  Testing s2i build"
-    ct_s2i_build_as_df file://${TEST_DIR}/examples/extending-image/ ${IMAGE_NAME} ${IMAGE_NAME}-testapp
-
-    local container_name=s2i_config_build
-    IMAGE_NAME=${IMAGE_NAME}-testapp _s2i_test_image "s2i_config_build" ""
-
-    echo "  Testing s2i mount"
-    test_app_dir=$(mktemp -d)
-    cp -r ${TEST_DIR}/examples/extending-image/ ${test_app_dir}/
-    chmod -R a+rX ${test_app_dir}
-    _s2i_test_image "s2i_test_mount" "-v ${test_app_dir}/extending-image:/opt/app-root/src/:z"
-    rm -rf ${test_app_dir}
-    mv ${TEST_DIR}/examples/extending-image/mongodb-cfg/mongod.conf.backup ${TEST_DIR}/examples/extending-image/mongodb-cfg/mongod.conf
-    echo "  Success!"
-}
-
-# Run the chosen tests
-TEST_LIST=${@:-$TEST_LIST} ct_run_test_list
